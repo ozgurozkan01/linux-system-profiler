@@ -141,4 +141,122 @@ show_cpu_status()
   echo "Maximum Speed             : $max_ghz"
 }
 
+show_ram_status()
+{
+  echo " ------- RAM & SWAP STATUS ------- "
+
+  if ! command -v free &> /dev/null; then
+    echo "RAM/Swap Usage    : N/A ('free' command not found)"
+    if [ -r /proc/meminfo ]; then
+      local total_kb total_mb
+      total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+      if [[ "$total_kb" =~ ^[0-9]+$ ]]; then
+        total_mb=$((total_kb / 1024))
+        echo "Total RAM (approx): ${total_mb} MiB (from /proc/meminfo)"
+      fi
+    fi
+    echo " --------------------------- "
+    return 1
+  fi
+
+  local mem_info
+  mem_info=$(LC_ALL=C free -m)
+
+  local total_ram free_ram buff_cache_ram available_ram effectively_used_ram ram_usage_percent
+  total_ram=$(echo "$mem_info" | awk '/^Mem:/ {print $2}')
+  free_ram=$(echo "$mem_info" | awk '/^Mem:/ {print $4}')
+  buff_cache_ram=$(echo "$mem_info" | awk '/^Mem:/ {print $6}')
+  available_ram=$(echo "$mem_info" | awk '/^Mem:/ {print $7}')
+
+  if [[ ! "$total_ram" =~ ^[0-9]+$ ]]; then
+      echo "RAM Usage         : N/A (Failed to parse 'free' output)"
+  else
+      effectively_used_ram=$((total_ram - available_ram))
+      ram_usage_percent="0.0%"
+      if [[ "$total_ram" -gt 0 ]]; then
+          ram_usage_percent=$(awk -v total="$total_ram" -v available="$available_ram" \
+                               'BEGIN {if (total > 0) printf "%.1f%%", ((total-available)/total)*100; else print "0.0%"}')
+      fi
+      echo "RAM - Total               : ${total_ram} MiB"
+      echo "RAM - Available           : ${available_ram} MiB (Ready for new applications)"
+      echo "RAM - Used                : ${effectively_used_ram} MiB (${ram_usage_percent})"
+      echo "RAM - Buff/Cache          : ${buff_cache_ram} MiB (Used by system, mostly reclaimable)"
+  fi
+
+  local total_swap used_swap swap_usage_percent="0.0%"
+  if echo "$mem_info" | grep -q '^Swap:'; then
+      total_swap=$(echo "$mem_info" | awk '/^Swap:/ {print $2}')
+      used_swap=$(echo "$mem_info" | awk '/^Swap:/ {print $3}')
+
+      if [[ ! "$total_swap" =~ ^[0-9]+$ ]]; then
+           echo "Swap Usage        : N/A (Failed to parse Swap info)"
+      elif [[ "$total_swap" -eq 0 ]]; then
+           echo "Swap Usage        : Not Configured (Total: 0 MiB)"
+      else
+          if [[ "$used_swap" =~ ^[0-9]+$ ]]; then
+              swap_usage_percent=$(awk -v used="$used_swap" -v total="$total_swap" \
+                                   'BEGIN {if (total > 0) printf "%.1f%%", (used/total)*100; else print "0.0%"}')
+          fi
+          echo "Swap - Total              : ${total_swap} MiB"
+          echo "Swap - Used               : ${used_swap} MiB (${swap_usage_percent}) [High usage indicates RAM pressure!]"
+      fi
+  else
+      echo "Swap Usage        : Not Reported by 'free'"
+  fi
+
+  echo
+  echo " ------- RAM Hardware Details ------- "
+
+  local ram_type="N/A"
+  local ram_speed="N/A"
+  local ram_slots_filled="N/A"
+  local ram_manufacturer="N/A"
+
+  if command -v dmidecode &> /dev/null; then
+    local dmidecode_output dmidecode_error exit_code_dmidecode
+    dmidecode_output=$(timeout 5 sudo dmidecode -t memory 2>&1)
+    exit_code_dmidecode=$?
+
+    if [ $exit_code_dmidecode -ne 0 ]; then
+        echo "RAM Hardware Info : N/A (sudo dmidecode failed or timed out. Code: ${exit_code_dmidecode})"
+    elif [ -z "$dmidecode_output" ]; then
+        echo "RAM Hardware Info : N/A (sudo dmidecode produced no output)"
+    else
+        ram_type=$(echo "$dmidecode_output" | grep -E '^\s*Type:' | grep -vE 'Unknown|Other' | head -n 1 | sed -e 's/^[[:space:]]*Type:[[:space:]]*//')
+        ram_speed=$(echo "$dmidecode_output" | grep -E '^\s*Configured Memory Speed:' | grep -vE 'Unknown|0 MHz|0 MT' | head -n 1 | sed -e 's/^[[:space:]]*Configured Memory Speed:[[:space:]]*//')
+        if [ -z "$ram_speed" ]; then
+           ram_speed=$(echo "$dmidecode_output" | grep -E '^\s*Configured Clock Speed:' | grep -vE 'Unknown|0 MHz|0 MT' | head -n 1 | sed -e 's/^[[:space:]]*Configured Clock Speed:[[:space:]]*//')
+        fi
+        if [ -z "$ram_speed" ]; then
+           ram_speed=$(echo "$dmidecode_output" | grep -E '^\s*Speed:' | grep -vE 'Unknown|0 MHz|0 MT' | head -n 1 | sed -e 's/^[[:space:]]*Speed:[[:space:]]*//')
+        fi
+        ram_manufacturer=$(echo "$dmidecode_output" | grep -E '^\s*Manufacturer:' | grep -vE 'Empty|Unknown|NO DIMM' | head -n 1 | sed -e 's/^[[:space:]]*Manufacturer:[[:space:]]*//')
+
+        ram_slots_filled=$(echo "$dmidecode_output" | grep -c -E "^\s*Size: [1-9][0-9]* (MB|GB|TB)")
+
+        total_ram_slots=$(echo "$dmidecode_output" | grep -E '^\s*Number Of Devices:' | head -n 1 | sed -e 's/^[[:space:]]*Number Of Devices:[[:space:]]*//')
+
+        if [ -z "$ram_type" ]; then ram_type="N/A"; fi
+        if [ -z "$ram_speed" ]; then ram_speed="N/A"; fi
+        if [ -z "$ram_manufacturer" ]; then ram_manufacturer="N/A"; fi
+        if ! [[ "$ram_slots_filled" =~ ^[0-9]+$ ]]; then
+             ram_slots_filled="N/A"
+        elif [ "$ram_slots_filled" -eq 0 ]; then
+             ram_slots_filled="0"
+        fi
+
+    fi
+  else
+      echo "RAM Hardware Info : N/A ('dmidecode' command not found)"
+  fi
+
+  echo "RAM Type                  : $ram_type"
+  echo "RAM Speed                 : $ram_speed"
+  echo "Manufacturer              : $ram_manufacturer"
+  echo "RAM Slots (Used/Total)    : $ram_slots_filled / $total_ram_slots"
+}
+
 show_cpu_status
+echo
+show_ram_status
+echo
