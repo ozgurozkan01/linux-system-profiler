@@ -5,8 +5,6 @@ echo
 
 show_cpu_status()
 {
-  echo " ------- CPU STATUS ------- "
-
   model_name=$(lscpu | grep 'Model name:' | sed 's/Model name:\s*//')
 
   logical_cores=$(lscpu | grep '^CPU(s):' | awk '{print $2}')
@@ -133,12 +131,15 @@ show_cpu_status()
       max_ghz=$(LC_ALL=C awk -v mhz="$max_mhz_dot" 'BEGIN { printf "%.2f GHz", mhz / 1000 }')
   fi
 
+  echo " ------- CPU STATUS ------- "
+
   echo "CPU Model                 : ${model_name:-Getting Information Failed}"
   echo "CPU Core Amount           : ${logical_cores:-NONE} Logical / ${physical_cores:-NONE} Physical"
   echo "Instantaneous Usage       : $cpu_usage"
   echo "Instantaneous Temperature : $cpu_temp"
   echo "Instantaneous Speed       : $current_ghz"
   echo "Maximum Speed             : $max_ghz"
+  echo
 }
 
 show_ram_status()
@@ -254,9 +255,87 @@ show_ram_status()
   echo "RAM Speed                 : $ram_speed"
   echo "Manufacturer              : $ram_manufacturer"
   echo "RAM Slots (Used/Total)    : $ram_slots_filled / $total_ram_slots"
+  echo
+}
+
+show_disk_status() {
+  echo " ------- DISK STATUS ------- "
+  if command -v df &> /dev/null; then
+    df -hT | grep -E '^/dev/|Filesystem' | column -t
+  else
+    echo "Disk Usage: N/A ('df' command not found)"
+  fi
+  echo
+}
+
+show_os_info() {
+  echo " ------- OS & SYSTEM INFO ------- "
+  local hostname dist_name kernel_ver arch uptime_val
+  hostname=$(hostname)
+  if [ -f /etc/os-release ]; then
+    dist_name=$(grep PRETTY_NAME /etc/os-release | cut -d'=' -f2 | tr -d '"')
+  elif command -v lsb_release &> /dev/null; then
+    dist_name=$(lsb_release -ds)
+  else
+    dist_name="N/A"
+  fi
+  kernel_ver=$(uname -r)
+  arch=$(uname -m)
+  uptime_val=$(uptime -p 2>/dev/null || uptime | sed 's/.*up \([^,]*\), .*/\1/')
+
+  echo "Hostname                  : $hostname"
+  echo "Distribution              : $dist_name"
+  echo "Kernel Version            : $kernel_ver"
+  echo "Architecture              : $arch"
+  echo "System Uptime             : $uptime_val"
+  echo
+}
+
+show_network_info() {
+  echo " ------- NETWORK INFO ------- "
+  echo "Local IP Addresses:"
+  if command -v ip &> /dev/null; then
+    ip -4 addr show | grep -oP 'inet \K[\d.]+' | grep -v '127.0.0.1' | sed 's/^/  /' || echo "  N/A"
+  elif command -v hostname &> /dev/null; then
+    hostname -I | sed 's/^/  /' || echo "  N/A (hostname -I failed or no IPs)"
+  else
+    echo "  N/A ('ip' or 'hostname -I' command not found)"
+  fi
+
+  echo "Public IP Address:"
+  if command -v curl &> /dev/null; then
+    public_ip=$(curl -s --connect-timeout 3 ifconfig.me/ip || curl -s --connect-timeout 3 api.ipify.org)
+    echo "  ${public_ip:-N/A (Could not fetch or no internet)}"
+  else
+    echo "  N/A ('curl' command not found)"
+  fi
+  echo
+}
+
+show_gpu_info() {
+  echo " ------- GPU INFO ------- "
+  if command -v lspci &> /dev/null; then
+    gpu_info=$(lspci | grep -iE 'VGA|3D|Display')
+    if [ -n "$gpu_info" ]; then
+      echo "$gpu_info" | while IFS= read -r line; do
+        # Daha detaylı sürücü bilgisi için: lspci -vnnk -s <slot>
+        echo "Detected GPU              : $(echo "$line" | cut -d':' -f3- | sed 's/^[ \t]*//')"
+        slot=$(echo "$line" | awk '{print $1}')
+        driver=$(lspci -vmmks "$slot" | grep -i "Driver" | awk -F':\t' '{print $2}')
+        echo "Kernel Driver in use      : ${driver:-N/A}"
+      done
+    else
+      echo "No discrete GPU detected or 'lspci' provided no relevant output."
+    fi
+  else
+    echo "GPU Info: N/A ('lspci' command not found)"
+  fi
+  echo
 }
 
 show_cpu_status
-echo
 show_ram_status
-echo
+show_disk_status
+show_os_info
+show_network_info
+show_gpu_info
